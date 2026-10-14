@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Virtual environments
+venv/
+.env/
+.envrc
+.venv/
+ENV/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.sublime-*
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Blender
+*.blend1
+*.blend2
+*.blend3
+*.blend
+*.pyc
+blender_addon/vid_an/__pycache__/
+
+# MediaPipe / backend runtime outputs
+backend/venv/
+backend/*.json
+backend/*.csv
+backend/*.mp4
+backend/*.mov
+backend/*.avi
+backend/*.mkv
+backend/*.webm
+*.pose.json
+pose_*.json
+
+# Dev/test artifacts
+_dev/output/
+_dev/*.json
+_dev/*.log
+_dev/cache/
+_dev/*.blend*
+_dev/.cache/
+
+# OS / misc
+*.log
+*.tmp
+.cache/
+~$*
+*~
+
+# Packaging / archives
+*.zip
+*.tar.gz
+*.tgz
+*.7z
+
+# Local user data (vid_an caches models etc.)
+.vid_an/
+~/.vid_an/

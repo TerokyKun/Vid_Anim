@@ -1,0 +1,2 @@
+# Note: Core add-on is pure Python + bpy (no external PyPI deps).
+# This is a top-level placeholder for dev tooling only.
