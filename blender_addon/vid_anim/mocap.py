@@ -3,6 +3,8 @@ import json
 import bpy
 from mathutils import Matrix, Vector
 
+from ._core_bridge import core
+
 MP = {
     "nose": 0,
     "l_ear": 7, "r_ear": 8,
@@ -24,34 +26,69 @@ BONES = [
     ("Spine", "Hips", ("mid_hip", "mid_shoulder"), REF_FWD),
     ("Neck", "Spine", ("mid_shoulder", "nose"), REF_FWD),
     ("Head", "Neck", ("nose", "nose_up"), REF_FWD),
-    ("Shoulder.L", "Spine", ("mid_shoulder", "l_shoulder"), REF_UP),
-    ("UpperArm.L", "Shoulder.L", ("l_shoulder", "l_elbow"), REF_UP),
-    ("ForeArm.L", "UpperArm.L", ("l_elbow", "l_wrist"), REF_UP),
-    ("Hand.L", "ForeArm.L", ("l_wrist", "l_index"), REF_UP),
-    ("Shoulder.R", "Spine", ("mid_shoulder", "r_shoulder"), REF_UP),
-    ("UpperArm.R", "Shoulder.R", ("r_shoulder", "r_elbow"), REF_UP),
-    ("ForeArm.R", "UpperArm.R", ("r_elbow", "r_wrist"), REF_UP),
-    ("Hand.R", "ForeArm.R", ("r_wrist", "r_index"), REF_UP),
+    ("Shoulder.L", "Spine", ("mid_shoulder", "l_shoulder"), REF_FWD),
+    ("UpperArm.L", "Shoulder.L", ("l_shoulder", "l_elbow"), REF_FWD),
+    ("ForeArm.L", "UpperArm.L", ("l_elbow", "l_wrist"), REF_FWD),
+    ("Hand.L", "ForeArm.L", ("l_wrist", "l_index"), REF_FWD),
+    ("Shoulder.R", "Spine", ("mid_shoulder", "r_shoulder"), REF_FWD),
+    ("UpperArm.R", "Shoulder.R", ("r_shoulder", "r_elbow"), REF_FWD),
+    ("ForeArm.R", "UpperArm.R", ("r_elbow", "r_wrist"), REF_FWD),
+    ("Hand.R", "ForeArm.R", ("r_wrist", "r_index"), REF_FWD),
     ("Thigh.L", "Hips", ("l_hip", "l_knee"), REF_FWD),
     ("Shin.L", "Thigh.L", ("l_knee", "l_ankle"), REF_FWD),
-    ("Foot.L", "Shin.L", ("l_ankle", "l_foot"), REF_UP),
+    ("Foot.L", "Shin.L", ("l_ankle", "l_foot"), REF_FWD),
     ("Thigh.R", "Hips", ("r_hip", "r_knee"), REF_FWD),
     ("Shin.R", "Thigh.R", ("r_knee", "r_ankle"), REF_FWD),
-    ("Foot.R", "Shin.R", ("r_ankle", "r_foot"), REF_UP),
+    ("Foot.R", "Shin.R", ("r_ankle", "r_foot"), REF_FWD),
 ]
 
 
 def _to_blender(p):
-    return Vector((p["x"], -p["z"], -p["y"]))
+    # MediaPipe world landmarks are right-handed: +x = the person's LEFT
+    # (image right when facing the camera), +y = DOWN, +z = depth toward the
+    # camera.  Blender is right-handed with +Y forward and +Z up, and the
+    # target rig faces -Y.  A coordinate-system change between two
+    # right-handed frames MUST be a proper rotation (determinant +1):
+    #     X = x        (left stays +X)
+    #     Y = +z       (toward-camera => -Y = character front)
+    #     Z = -y       (up)
+    # The previous (x, -z, -y) negated two axes, i.e. it was a REFLECTION
+    # (determinant -1), which mirrored the body front-to-back and made the
+    # limbs/arms appear twisted and the skeleton disjointed.
+    return Vector((p["x"], p["z"], -p["y"]))
 
 
-def _world_joints(frame):
+def _world_joints(frame, fill_partial=True):
     world = frame.get("world") or []
     if not world:
         return None
+    landmarks = frame.get("landmarks") or []
     pts = {}
+    valid = {}
     for name, idx in MP.items():
         pts[name] = _to_blender(world[idx])
+        v = 1.0
+        if idx < len(landmarks):
+            try:
+                v = float(landmarks[idx].get("v", 1.0))
+            except Exception:
+                v = 1.0
+        valid[name] = v >= 0.3
+
+    # Rebuild hidden parts as a balanced standing pose (centre of gravity under
+    # the visible silhouette) using the shared core package when available.
+    if fill_partial and core is not None and any(not v for v in valid.values()):
+        try:
+            import numpy as _np
+
+            pts_np = {k: _np.array([p.x, p.y, p.z], dtype=float) for k, p in pts.items()}
+            valid_np = dict(valid)
+            pts_np, synth = core.partial_body.complete(pts_np, valid_np)
+            pts = {k: Vector((float(a[0]), float(a[1]), float(a[2])))
+                   for k, a in pts_np.items()}
+        except Exception:
+            pass
+
     pts["mid_hip"] = (pts["l_hip"] + pts["r_hip"]) * 0.5
     pts["mid_shoulder"] = (pts["l_shoulder"] + pts["r_shoulder"]) * 0.5
     up = (pts["mid_shoulder"] - pts["mid_hip"])
@@ -65,7 +102,13 @@ def _rotation_from_dir(direction, ref):
     y = direction.normalized()
     if abs(y.dot(ref.normalized())) > 0.999:
         ref = Vector((1.0, 0.0, 0.0)) if abs(y.x) < 0.9 else Vector((0.0, 0.0, 1.0))
-    x = ref.cross(y).normalized()
+    # Build a right-handed frame (X, Y=bone, Z) where the bone's local Z points
+    # along ``ref`` (forward for the torso/legs = -Y, up for the arms/feet).
+    # The old ``x = ref.cross(y)`` produced ``z = x.cross(y) = -ref``, i.e. the
+    # torso/legs ended up rolled 180 deg (facing +Y).  When the add-on copied
+    # that absolute orientation onto the target, the hips' local X flipped and
+    # the two legs crossed.  ``x = y.cross(ref)`` makes ``z = ref``.
+    x = y.cross(ref).normalized()
     z = x.cross(y)
     return Matrix((x, y, z)).transposed()
 
@@ -99,7 +142,7 @@ def _ensure_armature(name="vidan_src"):
     return arm
 
 
-def iter_build_source_from_json(context, json_path, bone_prefix=""):
+def iter_build_source_from_json(context, json_path, bone_prefix="", fill_partial=True):
     """Build the source rig from pose JSON, yielding (done, total) per frame."""
     with open(json_path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
@@ -145,7 +188,7 @@ def iter_build_source_from_json(context, json_path, bone_prefix=""):
     total = len(frames)
     for fi, frame in enumerate(frames):
         f = int(round((frame.get("t") or 0.0) * src_fps)) + 1
-        pts = _world_joints(frame)
+        pts = _world_joints(frame, fill_partial=fill_partial)
         if pts is None:
             pts = prev_joints
         if pts is None:
@@ -191,8 +234,9 @@ def iter_build_source_from_json(context, json_path, bone_prefix=""):
     return arm
 
 
-def build_source_from_json(context, json_path, bone_prefix=""):
-    gen = iter_build_source_from_json(context, json_path, bone_prefix=bone_prefix)
+def build_source_from_json(context, json_path, bone_prefix="", fill_partial=True):
+    gen = iter_build_source_from_json(context, json_path, bone_prefix=bone_prefix,
+                                      fill_partial=fill_partial)
     result = None
     while True:
         try:

@@ -76,3 +76,7 @@ _dev/.cache/
 # Local user data (vid_an caches models etc.)
 .vid_an/
 ~/.vid_an/
+*.mp4
+
+docs/
+/*.json

@@ -1,2 +1,3 @@
-# Note: Core add-on is pure Python + bpy (no external PyPI deps).
-# This is a top-level placeholder for dev tooling only.
+mediapipe>=0.10.9
+opencv-python>=4.8.0
+numpy>=1.24.0

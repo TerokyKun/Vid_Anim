@@ -5,10 +5,11 @@ import sys
 import time
 
 import bpy
-from bpy_extras.io_utils import ImportHelper
+from bpy_extras.io_utils import ImportHelper, ExportHelper
 from bpy.props import StringProperty
 
 from . import mocap
+from . import blender_bridge
 from .bone_maps import auto_pairs, semantic_key
 from .mocap import build_source_from_json
 from .retarget import retarget, iter_retarget as retarget_gen
@@ -277,12 +278,13 @@ class VIDAN_OT_import_pose_json(bpy.types.Operator, ImportHelper):
     filter_glob: StringProperty(default="*.json", options={'HIDDEN'})
 
     def execute(self, context):
+        props = _get_props(context)
         try:
-            arm = build_source_from_json(context, self.filepath)
+            arm = build_source_from_json(context, self.filepath,
+                                         fill_partial=props.fill_partial_body)
         except Exception as exc:
             self.report({'ERROR'}, "Build failed: " + str(exc))
             return {'CANCELLED'}
-        props = _get_props(context)
         props.source_object = arm
         rng = _source_frame_range(arm)
         if rng and props.auto_range:
@@ -452,7 +454,9 @@ class VIDAN_OT_extract_motion(bpy.types.Operator):
     def _start_build(self, context):
         self._post_props = _get_props(context)
         self._phase = 'build'
-        self._gen = mocap.iter_build_source_from_json(context, self._out_json)
+        self._gen = mocap.iter_build_source_from_json(
+            context, self._out_json,
+            fill_partial=self._post_props.fill_partial_body)
         self._set_progress(context, 50, "vid_an: строю скелет персонажа...")
 
     def _retarget_gen(self, context):
@@ -512,13 +516,118 @@ class VIDAN_OT_extract_motion(bpy.types.Operator):
         return self.invoke(context, None)
 
 
+class VIDAN_OT_export_bvh(bpy.types.Operator, ExportHelper):
+    bl_idname = "vid_an.export_bvh"
+    bl_label = "Экспорт BVH"
+    bl_options = {'REGISTER'}
+
+    filename_ext = ".bvh"
+    filter_glob: StringProperty(default="*.bvh", options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            blender_bridge.export_bvh(context, self.filepath)
+        except Exception as exc:
+            self.report({'ERROR'}, "BVH export failed: " + str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Exported BVH: " + os.path.basename(self.filepath))
+        return {'FINISHED'}
+
+
+class VIDAN_OT_export_fbx(bpy.types.Operator, ExportHelper):
+    bl_idname = "vid_an.export_fbx"
+    bl_label = "Экспорт FBX"
+    bl_options = {'REGISTER'}
+
+    filename_ext = ".fbx"
+    filter_glob: StringProperty(default="*.fbx", options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            blender_bridge.export_fbx(context, self.filepath)
+        except Exception as exc:
+            self.report({'ERROR'}, "FBX export failed: " + str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Exported FBX: " + os.path.basename(self.filepath))
+        return {'FINISHED'}
+
+
+class VIDAN_OT_export_glb(bpy.types.Operator, ExportHelper):
+    bl_idname = "vid_an.export_glb"
+    bl_label = "Экспорт GLB (Godot)"
+    bl_options = {'REGISTER'}
+
+    filename_ext = ".glb"
+    filter_glob: StringProperty(default="*.glb", options={'HIDDEN'})
+
+    def execute(self, context):
+        try:
+            blender_bridge.export_glb(context, self.filepath)
+        except Exception as exc:
+            self.report({'ERROR'}, "GLB export failed: " + str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Exported GLB: " + os.path.basename(self.filepath))
+        return {'FINISHED'}
+
+
+class VIDAN_OT_export_arrays(bpy.types.Operator, ExportHelper):
+    bl_idname = "vid_an.export_arrays"
+    bl_label = "Экспорт координат (NPZ/JSONL/CSV)"
+    bl_options = {'REGISTER'}
+
+    filename_ext = ".npz"
+    filter_glob: StringProperty(default="*.npz;*.jsonl;*.csv", options={'HIDDEN'})
+
+    def execute(self, context):
+        fmt = os.path.splitext(self.filepath)[1].lstrip(".").lower() or "npz"
+        try:
+            blender_bridge.export_arrays_to_core(context, None, self.filepath, fmt)
+        except Exception as exc:
+            self.report({'ERROR'}, "Array export failed: " + str(exc))
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Exported arrays: " + os.path.basename(self.filepath))
+        return {'FINISHED'}
+
+
+class VIDAN_OT_import_session(bpy.types.Operator, ImportHelper):
+    bl_idname = "vid_an.import_session"
+    bl_label = "Импорт сессии mocap (JSONL/NPZ/JSON)"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    filename_ext = ".jsonl"
+    filter_glob: StringProperty(
+        default="*.jsonl;*.ndjson;*.npz;*.json", options={'HIDDEN'})
+
+    def execute(self, context):
+        props = _get_props(context)
+        try:
+            legacy = blender_bridge.session_to_legacy_json(self.filepath)
+            arm = build_source_from_json(context, legacy,
+                                         fill_partial=props.fill_partial_body)
+        except Exception as exc:
+            self.report({'ERROR'}, "Session import failed: " + str(exc))
+            return {'CANCELLED'}
+        props.source_object = arm
+        props.pose_json = legacy
+        rng = _source_frame_range(arm)
+        if rng and props.auto_range:
+            props.frame_start, props.frame_end = rng
+        self.report({'INFO'}, "Built source rig from session: " + arm.name)
+        return {'FINISHED'}
+
+
 CLASSES = (
     VIDAN_OT_help,
     VIDAN_OT_pick_video,
     VIDAN_OT_import_anim,
     VIDAN_OT_import_pose_json,
+    VIDAN_OT_import_session,
     VIDAN_OT_retarget,
     VIDAN_OT_clear_target,
     VIDAN_OT_preview_pairs,
     VIDAN_OT_extract_motion,
+    VIDAN_OT_export_bvh,
+    VIDAN_OT_export_fbx,
+    VIDAN_OT_export_glb,
+    VIDAN_OT_export_arrays,
 )

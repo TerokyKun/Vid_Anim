@@ -53,6 +53,14 @@ class VidAnProperties(bpy.types.PropertyGroup):
                     "FK-ключи реально гнули кости (нужно для Rigify).",
         default=True,
     )
+    fill_partial_body: bpy.props.BoolProperty(
+        name="Достраивать скрытые части тела",
+        description="Если в видео видно не всё тело (обрезаны ноги/руки),\n"
+                    "достроить скрытые суставы в условную стойку так, чтобы\n"
+                    "центр тяжести оставался под центром видимого силуэта.\n"
+                    "Скрытые части получают пониженный вес-достоверность.",
+        default=True,
+    )
     show_advanced: bpy.props.BoolProperty(
         name="Дополнительно",
         description="Показать технические настройки",

@@ -1,0 +1,20 @@
+MIXAMO_MAP = {
+  "Hips": "Hips",
+  "Spine": "Spine",
+  "Neck": "Neck",
+  "Head": "Head",
+  "Shoulder.L": "LeftShoulder",
+  "UpperArm.L": "LeftArm",
+  "ForeArm.L": "LeftForeArm",
+  "Hand.L": "LeftHand",
+  "Shoulder.R": "RightShoulder",
+  "UpperArm.R": "RightArm",
+  "ForeArm.R": "RightForeArm",
+  "Hand.R": "RightHand",
+  "Thigh.L": "LeftUpLeg",
+  "Shin.L": "LeftLeg",
+  "Foot.L": "LeftFoot",
+  "Thigh.R": "RightUpLeg",
+  "Shin.R": "RightLeg",
+  "Foot.R": "RightFoot"
+}

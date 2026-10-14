@@ -1,0 +1,41 @@
+{
+  "schema_version": "vid_an.models.v1",
+  "models": {
+    "mediapipe.pose_landmarker.lite": {
+      "kind": "mediapipe",
+      "file": "pose_landmarker_lite.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+      "description": "MediaPipe Pose Landmarker (lite). FAST MODE default."
+    },
+    "mediapipe.pose_landmarker.full": {
+      "kind": "mediapipe",
+      "file": "pose_landmarker_full.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task",
+      "description": "MediaPipe Pose Landmarker (full)."
+    },
+    "mediapipe.pose_landmarker.heavy": {
+      "kind": "mediapipe",
+      "file": "pose_landmarker_heavy.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_heavy.task",
+      "description": "MediaPipe Pose Landmarker (heavy)."
+    },
+    "onnx.rtmpose.body": {
+      "kind": "onnx",
+      "file": "rtmpose_body.onnx",
+      "url": "",
+      "input_width": 192,
+      "input_height": 256,
+      "num_keypoints": 17,
+      "description": "RTMPose body (COCO-17). QUALITY MODE. Place the ONNX file in models/ or set a URL."
+    },
+    "onnx.rtmo.body": {
+      "kind": "onnx",
+      "file": "rtmo_body.onnx",
+      "url": "",
+      "input_width": 640,
+      "input_height": 640,
+      "num_keypoints": 17,
+      "description": "RTMO single-stage multi-person (COCO-17). QUALITY MODE."
+    }
+  }
+}

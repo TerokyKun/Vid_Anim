@@ -1,0 +1,20 @@
+rigify_default = {
+  "Hips": "spine",
+  "Spine": "spine.001",
+  "Neck": "spine.004",
+  "Head": "spine.006",
+  "Shoulder.L": "shoulder.L",
+  "UpperArm.L": "upper_arm.L",
+  "ForeArm.L": "forearm.L",
+  "Hand.L": "hand.L",
+  "Shoulder.R": "shoulder.R",
+  "UpperArm.R": "upper_arm.R",
+  "ForeArm.R": "forearm.R",
+  "Hand.R": "hand.R",
+  "Thigh.L": "thigh.L",
+  "Shin.L": "shin.L",
+  "Foot.L": "foot.L",
+  "Thigh.R": "thigh.R",
+  "Shin.R": "shin.R",
+  "Foot.R": "foot.R"
+}
