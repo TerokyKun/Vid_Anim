@@ -5,6 +5,10 @@ that the Blender add-on builds (``blender_addon/vid_an/mocap.py``) so that an
 existing user bone-mapping keeps working: same bone names, same rest pose,
 same orientation convention (local ``+Y`` points down the bone).
 
+All knowledge about joints, reference axes and anatomical limits lives in
+:mod:`core.anatomy`; this module only turns those specs into per-frame world
+matrices and local rotations.
+
 Input is a :class:`core.pose_schema.PoseSequence`. Output is a
 :class:`SolvedSequence` holding, per frame, each bone's world matrix and its
 local rotation quaternion / root translation — ready to be baked into Blender,
@@ -18,7 +22,8 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
-from . import partial_body
+from . import anatomy, partial_body
+from .anatomy import FORWARD, UP
 from .pose_schema import MEDIAPIPE_NAMES, PoseSequence
 
 # MediaPipe landmark index -> short joint name (matches mocap.py).
@@ -35,8 +40,8 @@ MP_INDEX: Dict[str, int] = {
     "l_foot": 31, "r_foot": 32,
 }
 
-REF_FWD = np.array([0.0, -1.0, 0.0], dtype=np.float64)
-REF_UP = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+REF_FWD = FORWARD
+REF_UP = UP
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,11 @@ class Bone:
     ref: Tuple[float, float, float] = (0.0, -1.0, 0.0)
     head_rest: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     tail_rest: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    secondary: Optional[Tuple[str, str]] = None
+    group: str = "torso"
+    weight: float = 1.0
+    min_bend: float = 0.0
+    max_bend: float = 180.0
 
     @property
     def ref_vec(self) -> np.ndarray:
@@ -55,72 +65,17 @@ class Bone:
 
 
 # Rest pose + hierarchy identical to the add-on's capture rig.
-REST: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = {
-    "Hips": ((0.0, 0.0, 0.0), (0.0, 0.0, 0.1)),
-    "Spine": ((0.0, 0.0, 0.1), (0.0, 0.0, 0.35)),
-    "Neck": ((0.0, 0.0, 0.35), (0.0, 0.0, 0.5)),
-    "Head": ((0.0, 0.0, 0.5), (0.0, 0.0, 0.65)),
-    "Shoulder.L": ((0.0, 0.0, 0.4), (0.1, 0.0, 0.45)),
-    "UpperArm.L": ((0.1, 0.0, 0.45), (0.34, 0.0, 0.45)),
-    "ForeArm.L": ((0.34, 0.0, 0.45), (0.58, 0.0, 0.45)),
-    "Hand.L": ((0.58, 0.0, 0.45), (0.73, 0.0, 0.45)),
-    "Shoulder.R": ((0.0, 0.0, 0.4), (-0.1, 0.0, 0.45)),
-    "UpperArm.R": ((-0.1, 0.0, 0.45), (-0.34, 0.0, 0.45)),
-    "ForeArm.R": ((-0.34, 0.0, 0.45), (-0.58, 0.0, 0.45)),
-    "Hand.R": ((-0.58, 0.0, 0.45), (-0.73, 0.0, 0.45)),
-    "Thigh.L": ((0.08, 0.0, 0.0), (0.08, 0.0, -0.4)),
-    "Shin.L": ((0.08, 0.0, -0.4), (0.08, 0.0, -0.8)),
-    "Foot.L": ((0.08, 0.0, -0.8), (0.08, 0.15, -0.8)),
-    "Thigh.R": ((-0.08, 0.0, 0.0), (-0.08, 0.0, -0.4)),
-    "Shin.R": ((-0.08, 0.0, -0.4), (-0.08, 0.0, -0.8)),
-    "Foot.R": ((-0.08, 0.0, -0.8), (-0.08, 0.15, -0.8)),
-}
-
-# (name, parent, head_joint, tail_joint, ref)
-_SPEC: List[Tuple[str, Optional[str], str, str, np.ndarray]] = [
-    ("Hips", None, "mid_hip", "mid_shoulder", REF_FWD),
-    ("Spine", "Hips", "mid_hip", "mid_shoulder", REF_FWD),
-    ("Neck", "Spine", "mid_shoulder", "nose", REF_FWD),
-    ("Head", "Neck", "nose", "nose_up", REF_FWD),
-    ("Shoulder.L", "Spine", "mid_shoulder", "l_shoulder", REF_UP),
-    ("UpperArm.L", "Shoulder.L", "l_shoulder", "l_elbow", REF_UP),
-    ("ForeArm.L", "UpperArm.L", "l_elbow", "l_wrist", REF_UP),
-    ("Hand.L", "ForeArm.L", "l_wrist", "l_index", REF_UP),
-    ("Shoulder.R", "Spine", "mid_shoulder", "r_shoulder", REF_UP),
-    ("UpperArm.R", "Shoulder.R", "r_shoulder", "r_elbow", REF_UP),
-    ("ForeArm.R", "UpperArm.R", "r_elbow", "r_wrist", REF_UP),
-    ("Hand.R", "ForeArm.R", "r_wrist", "r_index", REF_UP),
-    ("Thigh.L", "Hips", "l_hip", "l_knee", REF_FWD),
-    ("Shin.L", "Thigh.L", "l_knee", "l_ankle", REF_FWD),
-    ("Foot.L", "Shin.L", "l_ankle", "l_foot", REF_UP),
-    ("Thigh.R", "Hips", "r_hip", "r_knee", REF_FWD),
-    ("Shin.R", "Thigh.R", "r_knee", "r_ankle", REF_FWD),
-    ("Foot.R", "Shin.R", "r_ankle", "r_foot", REF_UP),
-]
+REST: Dict[str, Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = anatomy.REST
 
 
 def rotation_from_direction(direction: np.ndarray, ref: np.ndarray) -> np.ndarray:
     """Build a rotation whose local ``+Y`` maps to ``direction``.
 
     Columns are ``(x, y, z)``; the returned matrix has determinant ``+1``.
+    Kept as the public rest-convention helper (``x = y x ref``); the richer
+    two-axis builder lives in :func:`core.anatomy.bone_frame`.
     """
-    y = np.asarray(direction, dtype=np.float64)
-    n = np.linalg.norm(y)
-    if n < 1e-9:
-        return np.eye(3)
-    y = y / n
-    r = np.asarray(ref, dtype=np.float64)
-    r = r / (np.linalg.norm(r) + 1e-12)
-    if abs(float(np.dot(y, r))) > 0.999:
-        r = np.array([1.0, 0.0, 0.0]) if abs(y[0]) < 0.9 else np.array([0.0, 0.0, 1.0])
-    x = np.cross(r, y)
-    nx = np.linalg.norm(x)
-    if nx < 1e-9:
-        x = np.array([1.0, 0.0, 0.0])
-    else:
-        x = x / nx
-    z = np.cross(x, y)
-    return np.stack([x, y, z], axis=1)
+    return anatomy.bone_frame(direction, None, ref, None)
 
 
 def _rt_to_matrix(rot: np.ndarray, pos: np.ndarray) -> np.ndarray:
@@ -149,7 +104,7 @@ class Skeleton:
         for b in self.bones:
             head = np.array(b.head_rest, dtype=np.float64)
             tail = np.array(b.tail_rest, dtype=np.float64)
-            rot = rotation_from_direction(tail - head, b.ref_vec)
+            rot = anatomy.bone_frame(tail - head, None, b.ref_vec, None)
             out[b.name] = _rt_to_matrix(rot, head)
         return out
 
@@ -167,16 +122,24 @@ class Skeleton:
 
 def build_skeleton() -> Skeleton:
     bones = []
-    for name, parent, hj, tj, ref in _SPEC:
-        head, tail = REST[name]
+    for spec in anatomy.BONES:
+        head, tail = REST[spec.name]
         bones.append(Bone(
-            name=name, parent=parent, head_joint=hj, tail_joint=tj,
-            ref=tuple(float(v) for v in ref), head_rest=head, tail_rest=tail,
+            name=spec.name, parent=spec.parent, head_joint=spec.head,
+            tail_joint=spec.tail, ref=spec.ref,
+            head_rest=head, tail_rest=tail, secondary=spec.secondary,
+            group=spec.group, weight=spec.weight,
+            min_bend=spec.min_bend, max_bend=spec.max_bend,
         ))
     return Skeleton(bones=bones)
 
 
 SKELETON = build_skeleton()
+
+# Backwards-compatible spec view (name, parent, head, tail, ref).
+_SPEC: List[Tuple[str, Optional[str], str, str, np.ndarray]] = [
+    (b.name, b.parent, b.head_joint, b.tail_joint, b.ref_vec) for b in SKELETON.bones
+]
 
 
 def mediapipe_to_solver(coords: np.ndarray) -> np.ndarray:
@@ -184,15 +147,39 @@ def mediapipe_to_solver(coords: np.ndarray) -> np.ndarray:
 
     Same convention as the add-on: ``(x, z, -y)`` (X left, -Y forward, Z up).
     Both MediaPipe and Blender are right-handed, so the change of basis must
-    be a proper rotation (determinant +1); the previous ``(x, -z, -y)`` was a
-    reflection (determinant -1) that mirrored the body front-to-back.
+    be a proper rotation (determinant +1); a reflection would mirror the body
+    front-to-back.
     """
-    c = np.asarray(coords, dtype=np.float64)
-    out = np.empty_like(c)
-    out[..., 0] = c[..., 0]
-    out[..., 1] = c[..., 2]
-    out[..., 2] = -c[..., 1]
-    return out
+    return anatomy.mediapipe_to_solver(coords)
+
+
+def _derive_head(pts: Dict[str, np.ndarray], valid: Dict[str, bool]) -> None:
+    """Add a synthetic ``head_top`` from the face (nose + ears).
+
+    The head bone must be able to nod/turn/tilt, so its axis comes from the face
+    plane rather than from the torso. ``head_top = nose + up * 0.15`` where
+    ``up = cross(forward, left)`` and ``forward = nose - mid_ear``. Falls back to
+    the torso ``up`` when the ears are unreliable.
+    """
+    nose = pts.get("nose")
+    if nose is None:
+        return
+    le = pts.get("l_ear")
+    re = pts.get("r_ear")
+    up = None
+    if le is not None and re is not None and valid.get("l_ear", True) and valid.get("r_ear", True):
+        left = np.asarray(le) - np.asarray(re)
+        forward = np.asarray(nose) - (np.asarray(le) + np.asarray(re)) * 0.5
+        c = np.cross(forward, left)
+        n = float(np.linalg.norm(c))
+        if n > 1e-6:
+            up = c / n
+    if up is None:
+        base = pts.get("mid_shoulder", pts.get("nose")) - pts.get("mid_hip", pts.get("nose"))
+        n = float(np.linalg.norm(base))
+        up = base / n if n > 1e-6 else UP.copy()
+    pts["head_top"] = np.asarray(nose, dtype=np.float64) + up * 0.15
+    valid["head_top"] = valid.get("nose", False)
 
 
 def build_joints(
@@ -236,6 +223,7 @@ def build_joints(
     if fill_partial and not all(valid.get(k, False) for k in MP_INDEX):
         pts, synth = partial_body.complete(
             pts, valid, stance_width=stance_width, silhouette_xz=silhouette_xz)
+    _derive_head(pts, valid)
     return pts, synth
 
 
@@ -246,12 +234,6 @@ def _derive_base(pts: Dict[str, np.ndarray], valid: Dict[str, bool]) -> None:
     if "l_shoulder" in pts and "r_shoulder" in pts:
         pts["mid_shoulder"] = (pts["l_shoulder"] + pts["r_shoulder"]) * 0.5
         valid["mid_shoulder"] = bool(valid.get("l_shoulder") and valid.get("r_shoulder"))
-    if "nose" in pts:
-        base = pts.get("mid_shoulder", pts.get("nose")) - pts.get("mid_hip", pts.get("nose"))
-        n = np.linalg.norm(base)
-        up = base / n if n > 1e-6 else REF_UP.copy()
-        pts["nose_up"] = pts["nose"] + up * 0.1
-        valid["nose_up"] = valid.get("nose", False)
 
 
 def joints_from_landmarks(
@@ -270,25 +252,93 @@ def joints_from_landmarks(
     return pts
 
 
+def blend_joints(
+    prev: Dict[str, np.ndarray],
+    cur: Dict[str, np.ndarray],
+    confidence: Optional[np.ndarray],
+    names: Sequence[str],
+) -> Dict[str, np.ndarray]:
+    """Weight low-confidence joints toward their previous value.
+
+    A single noisy landmark should not flip a whole limb between frames, so
+    instead of trusting it blindly we blend it against the previous frame with a
+    weight equal to its (scaled) confidence. Confident joints are untouched.
+    Derived joints (``mid_hip``/``mid_shoulder``/``head_top``) are recomputed.
+    """
+    if confidence is None:
+        return cur
+    idx = {n: i for i, n in enumerate(names)}
+    out = dict(cur)
+    for jname in MP_INDEX:
+        i = idx.get(jname)
+        if i is None or i >= len(confidence) or jname not in prev:
+            continue
+        conf = float(confidence[i])
+        if conf >= 0.5 or jname not in out:
+            continue
+        w = max(0.0, conf) / 0.5
+        out[jname] = w * np.asarray(out[jname]) + (1.0 - w) * np.asarray(prev[jname])
+    valid = {k: True for k in out}
+    _derive_base(out, valid)
+    _derive_head(out, valid)
+    return out
+
+
+def _secondary_vec(bone: Bone, joints: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+    if not bone.secondary:
+        return None
+    a = joints.get(bone.secondary[0])
+    b = joints.get(bone.secondary[1])
+    if a is None or b is None:
+        return None
+    v = np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)
+    if float(np.linalg.norm(v)) < 1e-4:
+        return None
+    return v
+
+
 def solve_frame(
     skeleton: Skeleton,
     joints: Dict[str, np.ndarray],
+    prev: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    """Return ``name -> 4x4 world matrix`` for one frame."""
+    """Return ``name -> 4x4 world matrix`` for one frame.
+
+    ``prev`` maps a bone name to the *previous frame's* 3x3 world rotation; it
+    is used to keep each bone's roll continuous (no 180-degree flips) across
+    frames. Bones are processed parent-first, and each direction is clamped to
+    its anatomical bend range relative to the parent.
+    """
     rest = skeleton.rest_world()
     out: Dict[str, np.ndarray] = {}
     for b in skeleton.bones:
         head = joints.get(b.head_joint)
         tail = joints.get(b.tail_joint)
         if head is None or tail is None:
+            parent_prev = prev.get(b.name) if prev else None
+            rot = parent_prev[:3, :3] if parent_prev is not None else rest[b.name][:3, :3]
+            pos = np.asarray(head, dtype=np.float64) if head is not None else rest[b.name][:3, 3]
+            out[b.name] = _rt_to_matrix(np.array(rot, dtype=np.float64), pos)
             continue
-        direction = tail - head
-        if np.linalg.norm(direction) < 1e-8:
-            rot = out.get(b.parent, rest[b.name])[:3, :3] if b.parent else rest[b.name][:3, :3]
-            out[b.name] = _rt_to_matrix(rot.copy(), head)
+
+        head = np.asarray(head, dtype=np.float64)
+        direction = np.asarray(tail, dtype=np.float64) - head
+
+        parent_dir = None
+        if b.parent and b.parent in out:
+            parent_dir = out[b.parent][:3, 1]
+        direction = anatomy.clamp_direction(direction, parent_dir, b.min_bend, b.max_bend)
+
+        if float(np.linalg.norm(direction)) < 1e-8:
+            rot = prev[b.name][:3, :3] if prev and b.name in prev else rest[b.name][:3, :3]
+            out[b.name] = _rt_to_matrix(np.array(rot, dtype=np.float64), head)
             continue
-        rot = rotation_from_direction(direction, b.ref_vec)
-        out[b.name] = _rt_to_matrix(rot, head)
+
+        prev_x = None
+        if prev and b.name in prev:
+            prev_x = prev[b.name][:3, 0]
+        frame = anatomy.bone_frame(direction, _secondary_vec(b, joints), b.ref_vec, prev_x)
+        out[b.name] = _rt_to_matrix(frame, head)
     return out
 
 
@@ -389,6 +439,8 @@ def scale_skeleton(
             tail_joint=b.tail_joint, ref=b.ref,
             head_rest=tuple(v * factor for v in b.head_rest),
             tail_rest=tuple(v * factor for v in b.tail_rest),
+            secondary=b.secondary, group=b.group, weight=b.weight,
+            min_bend=b.min_bend, max_bend=b.max_bend,
         ))
     return Skeleton(bones=bones)
 
@@ -398,6 +450,7 @@ def solve_sequence(
     skeleton: Optional[Skeleton] = None,
     min_visibility: float = 0.3,
     fill_partial: bool = True,
+    smooth_rotations: bool = True,
 ) -> SolvedSequence:
     """Solve every frame of ``sequence`` into a :class:`SolvedSequence`.
 
@@ -410,7 +463,12 @@ def solve_sequence(
     rest_world = skel.rest_world()
     result = SolvedSequence(skeleton=skel, fps=sequence.fps, source=sequence.source)
 
+    from .smoothing import QuatSmoother
+
+    smoothers = {b.name: QuatSmoother(anatomy.group_smoothing(b.group)) for b in skel.bones}
+
     prev_world: Optional[Dict[str, np.ndarray]] = None
+    prev_joints: Optional[Dict[str, np.ndarray]] = None
     prev_root = np.zeros(3, dtype=np.float64)
     for fr in sequence.frames:
         if fr.landmarks_3d is None or len(fr.landmarks_3d) == 0:
@@ -429,8 +487,9 @@ def solve_sequence(
                     continue
                 world = prev_world
             else:
-                world = solve_frame(skel, joints)
+                world = solve_frame(skel, joints, prev_world)
                 prev_world = world
+                prev_joints = joints
             result.synthesized.append(set(synth))
         else:
             result.missing.append(False)
@@ -438,8 +497,11 @@ def solve_sequence(
                 fr.landmarks_3d, sequence.landmark_names,
                 confidence=fr.confidence, min_vis=min_visibility,
                 fill_partial=fill_partial)
-            world = solve_frame(skel, joints)
+            if prev_joints is not None:
+                joints = blend_joints(prev_joints, joints, fr.confidence, sequence.landmark_names)
+            world = solve_frame(skel, joints, prev_world)
             prev_world = world
+            prev_joints = joints
             result.synthesized.append(set(synth or set()))
 
         local: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
@@ -447,6 +509,8 @@ def solve_sequence(
             if b.name not in world:
                 continue
             loc, quat = local_basis(skel, b.name, world, rest_local, rest_world)
+            if smooth_rotations:
+                quat = smoothers[b.name](quat)
             local[b.name] = (loc, quat)
         result.world.append(world)
         result.local.append(local)

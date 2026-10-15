@@ -9,6 +9,7 @@ MediaPipe, ONNX Runtime) are imported lazily inside the modules that need them
 so that importing :mod:`core` never fails when they are missing.
 """
 
+from . import anatomy
 from . import partial_body
 from . import pose_schema
 from . import smoothing
@@ -48,6 +49,7 @@ __all__ = [
     "build_joints",
     "solve_sequence",
     "rotation_from_direction",
+    "anatomy",
     "partial_body",
     "pose_schema",
     "smoothing",

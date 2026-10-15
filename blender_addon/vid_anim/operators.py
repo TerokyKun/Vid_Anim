@@ -218,6 +218,7 @@ class VIDAN_OT_retarget(bpy.types.Operator):
                 yaw_offset_deg=props.yaw_offset,
                 loc_scale=props.loc_scale,
                 fk_mode=props.fk_mode,
+                smooth=props.smooth,
             )
         except Exception as exc:
             self.report({'ERROR'}, "Retarget failed: " + str(exc))
@@ -468,7 +469,7 @@ class VIDAN_OT_extract_motion(bpy.types.Operator):
             context, src, tgt, pairs,
             props.frame_start, props.frame_end, step=props.frame_step,
             yaw_offset_deg=props.yaw_offset, loc_scale=props.loc_scale,
-            fk_mode=props.fk_mode,
+            fk_mode=props.fk_mode, smooth=props.smooth,
         )
 
     def _drive_post(self, context):

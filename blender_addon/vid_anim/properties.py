@@ -53,6 +53,13 @@ class VidAnProperties(bpy.types.PropertyGroup):
                     "FK-ключи реально гнули кости (нужно для Rigify).",
         default=True,
     )
+    smooth: bpy.props.FloatProperty(
+        name="Сглаживание",
+        description="Временное сглаживание вращений при ретаргете (0 — без\n"
+                    "сглаживания, 1 — сильное). Убирает дрожание/«конвульсии»\n"
+                    "torso и головы; конечности следуют быстрее.",
+        default=0.6, min=0.0, max=1.0,
+    )
     fill_partial_body: bpy.props.BoolProperty(
         name="Достраивать скрытые части тела",
         description="Если в видео видно не всё тело (обрезаны ноги/руки),\n"

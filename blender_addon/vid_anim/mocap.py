@@ -1,4 +1,5 @@
 import json
+from collections import namedtuple
 
 import bpy
 from mathutils import Matrix, Vector
@@ -21,26 +22,44 @@ MP = {
 REF_FWD = Vector((0.0, -1.0, 0.0))
 REF_UP = Vector((0.0, 0.0, 1.0))
 
-BONES = [
-    ("Hips", None, ("mid_hip", "mid_shoulder"), REF_FWD),
-    ("Spine", "Hips", ("mid_hip", "mid_shoulder"), REF_FWD),
-    ("Neck", "Spine", ("mid_shoulder", "nose"), REF_FWD),
-    ("Head", "Neck", ("nose", "nose_up"), REF_FWD),
-    ("Shoulder.L", "Spine", ("mid_shoulder", "l_shoulder"), REF_FWD),
-    ("UpperArm.L", "Shoulder.L", ("l_shoulder", "l_elbow"), REF_FWD),
-    ("ForeArm.L", "UpperArm.L", ("l_elbow", "l_wrist"), REF_FWD),
-    ("Hand.L", "ForeArm.L", ("l_wrist", "l_index"), REF_FWD),
-    ("Shoulder.R", "Spine", ("mid_shoulder", "r_shoulder"), REF_FWD),
-    ("UpperArm.R", "Shoulder.R", ("r_shoulder", "r_elbow"), REF_FWD),
-    ("ForeArm.R", "UpperArm.R", ("r_elbow", "r_wrist"), REF_FWD),
-    ("Hand.R", "ForeArm.R", ("r_wrist", "r_index"), REF_FWD),
-    ("Thigh.L", "Hips", ("l_hip", "l_knee"), REF_FWD),
-    ("Shin.L", "Thigh.L", ("l_knee", "l_ankle"), REF_FWD),
-    ("Foot.L", "Shin.L", ("l_ankle", "l_foot"), REF_FWD),
-    ("Thigh.R", "Hips", ("r_hip", "r_knee"), REF_FWD),
-    ("Shin.R", "Thigh.R", ("r_knee", "r_ankle"), REF_FWD),
-    ("Foot.R", "Shin.R", ("r_ankle", "r_foot"), REF_FWD),
+Spec = namedtuple("Spec", "name parent head tail secondary ref min_bend max_bend")
+
+_LOCAL_SPECS = [
+    ("Hips", None, "mid_hip", "mid_shoulder", ("l_hip", "r_hip"), REF_FWD, 0.0, 180.0),
+    ("Spine", "Hips", "mid_hip", "mid_shoulder", ("l_shoulder", "r_shoulder"), REF_FWD, 0.0, 45.0),
+    ("Neck", "Spine", "mid_shoulder", "nose", ("l_shoulder", "r_shoulder"), REF_FWD, 0.0, 55.0),
+    ("Head", "Neck", "nose", "head_top", ("l_ear", "r_ear"), REF_FWD, 0.0, 70.0),
+    ("Shoulder.L", "Spine", "mid_shoulder", "l_shoulder", None, REF_FWD, 0.0, 60.0),
+    ("UpperArm.L", "Shoulder.L", "l_shoulder", "l_elbow", None, REF_FWD, 0.0, 180.0),
+    ("ForeArm.L", "UpperArm.L", "l_elbow", "l_wrist", None, REF_FWD, 0.0, 155.0),
+    ("Hand.L", "ForeArm.L", "l_wrist", "l_index", None, REF_FWD, 0.0, 90.0),
+    ("Shoulder.R", "Spine", "mid_shoulder", "r_shoulder", None, REF_FWD, 0.0, 60.0),
+    ("UpperArm.R", "Shoulder.R", "r_shoulder", "r_elbow", None, REF_FWD, 0.0, 180.0),
+    ("ForeArm.R", "UpperArm.R", "r_elbow", "r_wrist", None, REF_FWD, 0.0, 155.0),
+    ("Hand.R", "ForeArm.R", "r_wrist", "r_index", None, REF_FWD, 0.0, 90.0),
+    ("Thigh.L", "Hips", "l_hip", "l_knee", None, REF_FWD, 0.0, 130.0),
+    ("Shin.L", "Thigh.L", "l_knee", "l_ankle", None, REF_FWD, 0.0, 155.0),
+    ("Foot.L", "Shin.L", "l_ankle", "l_foot", None, REF_FWD, 0.0, 80.0),
+    ("Thigh.R", "Hips", "r_hip", "r_knee", None, REF_FWD, 0.0, 130.0),
+    ("Shin.R", "Thigh.R", "r_knee", "r_ankle", None, REF_FWD, 0.0, 155.0),
+    ("Foot.R", "Shin.R", "r_ankle", "r_foot", None, REF_FWD, 0.0, 80.0),
 ]
+
+
+def _load_specs():
+    """Prefer the shared core anatomy table; fall back to a local copy."""
+    anat = getattr(core, "anatomy", None) if core is not None else None
+    if anat is not None:
+        return [Spec(s.name, s.parent, s.head, s.tail, s.secondary,
+                     Vector(s.ref), s.min_bend, s.max_bend) for s in anat.BONES]
+    return [Spec(n, p, h, t, sec, r, mn, mx) for (n, p, h, t, sec, r, mn, mx) in _LOCAL_SPECS]
+
+
+BONES = _load_specs()
+
+
+def _anatomy():
+    return getattr(core, "anatomy", None) if core is not None else None
 
 
 def _to_blender(p):
@@ -53,9 +72,28 @@ def _to_blender(p):
     #     Y = +z       (toward-camera => -Y = character front)
     #     Z = -y       (up)
     # The previous (x, -z, -y) negated two axes, i.e. it was a REFLECTION
-    # (determinant -1), which mirrored the body front-to-back and made the
-    # limbs/arms appear twisted and the skeleton disjointed.
+    # (determinant -1), which mirrored the body front-to-back.
     return Vector((p["x"], p["z"], -p["y"]))
+
+
+def _vec3(v):
+    return [float(v.x), float(v.y), float(v.z)]
+
+
+def _derive_head(pts):
+    """Synthetic ``head_top`` so the head bone can nod/turn/tilt from the face."""
+    nose = pts["nose"]
+    up = None
+    if "l_ear" in pts and "r_ear" in pts:
+        left = pts["l_ear"] - pts["r_ear"]
+        forward = nose - (pts["l_ear"] + pts["r_ear"]) * 0.5
+        c = forward.cross(left)
+        if c.length > 1e-6:
+            up = c.normalized()
+    if up is None:
+        up = (pts["mid_shoulder"] - pts["mid_hip"])
+        up = up.normalized() if up.length > 1e-6 else REF_UP
+    pts["head_top"] = nose + up * 0.15
 
 
 def _world_joints(frame, fill_partial=True):
@@ -83,7 +121,7 @@ def _world_joints(frame, fill_partial=True):
 
             pts_np = {k: _np.array([p.x, p.y, p.z], dtype=float) for k, p in pts.items()}
             valid_np = dict(valid)
-            pts_np, synth = core.partial_body.complete(pts_np, valid_np)
+            pts_np, _synth = core.partial_body.complete(pts_np, valid_np)
             pts = {k: Vector((float(a[0]), float(a[1]), float(a[2])))
                    for k, a in pts_np.items()}
         except Exception:
@@ -95,22 +133,63 @@ def _world_joints(frame, fill_partial=True):
     if up.length < 1e-6:
         up = REF_UP
     pts["nose_up"] = pts["nose"] + up.normalized() * 0.1
+    _derive_head(pts)
     return pts
 
 
-def _rotation_from_dir(direction, ref):
+def _secondary_vec(spec, pts):
+    if not spec.secondary:
+        return None
+    a = pts.get(spec.secondary[0])
+    b = pts.get(spec.secondary[1])
+    if a is None or b is None:
+        return None
+    v = a - b
+    return v if v.length > 1e-4 else None
+
+
+def _bone_frame(direction, secondary, ref, prev_x):
+    """Right-handed bone frame (X=left, Y=direction, Z=XxY); shared with core."""
+    anat = _anatomy()
+    if anat is not None:
+        m = anat.bone_frame(_vec3(direction),
+                            _vec3(secondary) if secondary is not None else None,
+                            _vec3(ref),
+                            _vec3(prev_x) if prev_x is not None else None)
+        x = Vector((m[0][0], m[1][0], m[2][0]))
+        y = Vector((m[0][1], m[1][1], m[2][1]))
+        z = Vector((m[0][2], m[1][2], m[2][2]))
+        return Matrix((x, y, z)).transposed()
+
     y = direction.normalized()
-    if abs(y.dot(ref.normalized())) > 0.999:
-        ref = Vector((1.0, 0.0, 0.0)) if abs(y.x) < 0.9 else Vector((0.0, 0.0, 1.0))
-    # Build a right-handed frame (X, Y=bone, Z) where the bone's local Z points
-    # along ``ref`` (forward for the torso/legs = -Y, up for the arms/feet).
-    # The old ``x = ref.cross(y)`` produced ``z = x.cross(y) = -ref``, i.e. the
-    # torso/legs ended up rolled 180 deg (facing +Y).  When the add-on copied
-    # that absolute orientation onto the target, the hips' local X flipped and
-    # the two legs crossed.  ``x = y.cross(ref)`` makes ``z = ref``.
-    x = y.cross(ref).normalized()
+    if secondary is not None:
+        s = secondary - y * secondary.dot(y)
+        x = s if s.length > 1e-6 else y.cross(ref).normalized()
+    else:
+        r = ref.normalized()
+        if abs(y.dot(r)) > 0.999:
+            r = Vector((1.0, 0.0, 0.0)) if abs(y.x) < 0.9 else Vector((0.0, 0.0, 1.0))
+        x = y.cross(r)
+        x = x.normalized() if x.length > 1e-9 else Vector((1.0, 0.0, 0.0))
+    if prev_x is not None and x.dot(prev_x) < 0.0:
+        x = -x
     z = x.cross(y)
     return Matrix((x, y, z)).transposed()
+
+
+def _clamp_dir(direction, parent_dir, min_bend, max_bend):
+    anat = _anatomy()
+    if anat is not None and parent_dir is not None:
+        import numpy as _np
+
+        out = anat.clamp_direction(_vec3(direction), _vec3(parent_dir), min_bend, max_bend)
+        return Vector((float(out[0]), float(out[1]), float(out[2])))
+    return direction
+
+
+def _rotation_from_dir(direction, ref):
+    """Public rest-convention helper (kept for compatibility)."""
+    return _bone_frame(direction, None, ref, None)
 
 
 REST = {
@@ -155,13 +234,13 @@ def iter_build_source_from_json(context, json_path, bone_prefix="", fill_partial
     context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode='EDIT')
     eb = arm.data.edit_bones
-    for bname, parent, _jt, _ref in BONES:
-        b = eb.new(bone_prefix + bname)
-        head, tail = REST[bname]
+    for spec in BONES:
+        b = eb.new(bone_prefix + spec.name)
+        head, tail = REST[spec.name]
         b.head = Vector(head)
         b.tail = Vector(tail)
-        if parent:
-            b.parent = eb[bone_prefix + parent]
+        if spec.parent:
+            b.parent = eb[bone_prefix + spec.parent]
     bpy.ops.object.mode_set(mode='OBJECT')
 
     for pb in arm.pose.bones:
@@ -181,10 +260,11 @@ def iter_build_source_from_json(context, json_path, bone_prefix="", fill_partial
     scene.frame_start = 1
     scene.frame_end = last_frame
 
-    data_bones = {bone_prefix + b: arm.data.bones[bone_prefix + b] for b, _p, _j, _r in BONES}
-    pose_bones = {bone_prefix + b: arm.pose.bones[bone_prefix + b] for b, _p, _j, _r in BONES}
+    data_bones = {bone_prefix + s.name: arm.data.bones[bone_prefix + s.name] for s in BONES}
+    pose_bones = {bone_prefix + s.name: arm.pose.bones[bone_prefix + s.name] for s in BONES}
 
     prev_joints = None
+    prev_x = {}
     total = len(frames)
     for fi, frame in enumerate(frames):
         f = int(round((frame.get("t") or 0.0) * src_fps)) + 1
@@ -201,18 +281,31 @@ def iter_build_source_from_json(context, json_path, bone_prefix="", fill_partial
             pb.matrix_basis = Matrix.Identity(4)
 
         pose_arm = {}
-        for bname, parent, (h, t), ref in BONES:
-            head = pts[h]
-            direction = pts[t] - pts[h]
+        for spec in BONES:
+            head = pts[spec.head]
+            direction = pts[spec.tail] - head
+            stored = prev_x.get(spec.name)
             if direction.length < 1e-8:
-                continue
-            rot = _rotation_from_dir(direction, ref)
-            M = Matrix.Translation(head) @ rot.to_4x4()
+                if stored is None:
+                    continue
+                frame_m = Matrix((stored[0], stored[1], stored[2])).transposed()
+                M = Matrix.Translation(head) @ frame_m.to_4x4()
+            else:
+                parent_dir = None
+                if spec.parent:
+                    pname = bone_prefix + spec.parent
+                    pm = pose_arm.get(pname)
+                    if pm is not None:
+                        parent_dir = pm.to_3x3() @ Vector((0.0, 1.0, 0.0))
+                direction = _clamp_dir(direction, parent_dir, spec.min_bend, spec.max_bend)
+                frame_m = _bone_frame(direction, _secondary_vec(spec, pts),
+                                      spec.ref, stored[0] if stored else None)
+                M = Matrix.Translation(head) @ frame_m.to_4x4()
 
-            name = bone_prefix + bname
+            name = bone_prefix + spec.name
             tbone = data_bones[name]
-            if parent:
-                pname = bone_prefix + parent
+            if spec.parent:
+                pname = bone_prefix + spec.parent
                 base = pose_arm[pname] @ data_bones[pname].matrix_local.inverted() @ tbone.matrix_local
                 basis = base.inverted() @ M
             else:
@@ -222,9 +315,11 @@ def iter_build_source_from_json(context, json_path, bone_prefix="", fill_partial
             pb.rotation_quaternion = q
             pb.location = loc
             pose_arm[name] = M
+            prev_x[spec.name] = (Vector(frame_m.col[0]), Vector(frame_m.col[1]),
+                                 Vector(frame_m.col[2]))
 
-        for bname, _p, _j, _r in BONES:
-            pose_bones[bone_prefix + bname].keyframe_insert("rotation_quaternion", frame=f)
+        for spec in BONES:
+            pose_bones[bone_prefix + spec.name].keyframe_insert("rotation_quaternion", frame=f)
         root = pose_bones[bone_prefix + "Hips"]
         root.keyframe_insert("location", frame=f)
 

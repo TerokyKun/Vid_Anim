@@ -78,6 +78,7 @@ class VIDAN_PT_main(bpy.types.Panel):
             adv.prop(props, "fk_mode")
             adv.prop(props, "auto_range")
             adv.prop(props, "frame_step")
+            adv.prop(props, "smooth")
 
 
 CLASSES = (VIDAN_PT_main,)

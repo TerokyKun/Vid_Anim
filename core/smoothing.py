@@ -83,6 +83,44 @@ class OneEuroFilter:
         return x_hat.astype(np.float32)
 
 
+class QuatSmoother:
+    """Adaptive exponential smoother for a rotation quaternion ``(w, x, y, z)``.
+
+    Operates in rotation space (spherical blend), not on Euler angles, so it
+    never introduces gimbal artefacts and correctly handles the ``+q == -q``
+    ambiguity (each new sample is hemisphere-aligned with the previous one).
+
+    ``alpha`` in ``[0, 1)`` is the strength kept from the previous state
+    (higher = smoother/laggier). A per-region ``alpha`` (see
+    :data:`core.anatomy.SMOOTH`) keeps the torso/head steady while letting fast
+    hand gestures through.
+    """
+
+    def __init__(self, alpha: float = 0.3) -> None:
+        self.alpha = float(max(0.0, min(0.98, alpha)))
+        self._q: Optional[np.ndarray] = None
+
+    def reset(self) -> None:
+        self._q = None
+
+    def __call__(self, q: np.ndarray) -> np.ndarray:
+        q = np.asarray(q, dtype=np.float64)
+        if self._q is None:
+            self._q = q.copy()
+            return q
+        p = self._q
+        if float(np.dot(p, q)) < 0.0:
+            q = -q
+        out = self.alpha * p + (1.0 - self.alpha) * q
+        n = float(np.linalg.norm(out))
+        if n < 1e-9:
+            out = q
+        else:
+            out = out / n
+        self._q = out
+        return out
+
+
 def interpolate_missing(arr: np.ndarray, axis: int = 0) -> np.ndarray:
     """Linearly interpolate NaNs along ``axis``; clamp-extrapolate at the edges.
 

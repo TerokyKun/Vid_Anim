@@ -5,6 +5,59 @@ from mathutils import Matrix, Quaternion, Vector
 
 from .bone_maps import auto_pairs, semantic_key
 
+# Temporal smoothing (anti-"convulsion") weights per semantic group. The value
+# is how much of the previous frame is *held*; higher = smoother but more lag.
+_GROUP_SMOOTH = {
+    "hips": 0.45, "spine": 0.50, "chest": 0.50, "neck": 0.55, "head": 0.55,
+}
+_DEFAULT_SMOOTH = 0.30  # arms / legs track faster
+
+
+class _QuatEMA:
+    """Causal hemisphere-aligned EMA on a rotation quaternion."""
+
+    __slots__ = ("alpha", "prev")
+
+    def __init__(self, alpha):
+        self.alpha = alpha
+        self.prev = None
+
+    def filter(self, q):
+        if self.prev is None or self.alpha <= 0.0:
+            self.prev = q.copy()
+            return q.copy()
+        qq = q.copy()
+        if self.prev.dot(qq) < 0.0:
+            qq.negate()
+        out = self.prev.slerp(qq, 1.0 - self.alpha)
+        self.prev = out.copy()
+        return out
+
+
+class _VecEMA:
+    """Causal EMA on a translation vector (root motion)."""
+
+    __slots__ = ("alpha", "prev")
+
+    def __init__(self, alpha):
+        self.alpha = alpha
+        self.prev = None
+
+    def filter(self, v):
+        if self.prev is None or self.alpha <= 0.0:
+            self.prev = v.copy()
+            return v.copy()
+        out = self.prev.lerp(v, 1.0 - self.alpha)
+        self.prev = out.copy()
+        return out
+
+
+def _alpha_for(sem, smooth):
+    if smooth <= 0.0:
+        return 0.0
+    base = _GROUP_SMOOTH.get(sem, _DEFAULT_SMOOTH)
+    return max(0.0, min(0.95, base * smooth))
+
 
 def _world_rest(obj, bone):
     return obj.matrix_world @ bone.matrix_local
@@ -20,28 +73,41 @@ def _bone_depth(bone):
 
 
 def force_fk(target_arm):
-    """Make limb chains follow their FK controls.
+    """Make the deform chain follow its FK controls instead of IK.
 
-    On control rigs like Rigify, an IK constraint is stacked on top of the FK
-    control and normally wins. Here we drop the IK constraint's influence,
-    remove its drivers and set the FK/IK switch to FK so FK keyframes drive
-    the deformation regardless of the evaluation context.
+    Many imported rigs (Rigify and similar) drive the legs with an ``IK``
+    constraint on the lower leg plus a ``COPY_ROTATION`` on the foot, all aimed
+    at an IK control bone. Those constraints stack on top of the FK bones and
+    normally win, so writing FK rotations/keys alone does nothing: the leg keeps
+    following its IK target and the *mesh never deforms*.
+
+    Here we neutralise every IK-related constraint (any type whose subtarget or
+    name references an IK control, plus all ``IK`` constraints), the influence
+    drivers that would re-enable them, and the rig's FK/IK switch property, so
+    the FK keyframes genuinely drive the deform bones.
     """
     ad = target_arm.animation_data
     for pb in target_arm.pose.bones:
         for con in pb.constraints:
-            sub = getattr(con, "subtarget", "") or ""
-            if con.type == 'COPY_TRANSFORMS' and "ik" in sub.lower():
-                con.influence = 0.0
-                if ad is not None:
-                    path = 'pose.bones["%s"].constraints["%s"].influence' % (pb.name, con.name)
-                    for drv in [d for d in ad.drivers if d.data_path == path]:
-                        try:
-                            ad.drivers.remove(drv)
-                        except Exception:
-                            pass
+            sub = (getattr(con, "subtarget", "") or "").lower()
+            cname = (con.name or "").lower()
+            ik_related = con.type == 'IK' or "ik" in sub or "ik" in cname
+            if not ik_related:
+                continue
+            con.influence = 0.0
+            try:
+                con.mute = True
+            except Exception:
+                pass
+            if ad is not None:
+                path = 'pose.bones["%s"].constraints["%s"].influence' % (pb.name, con.name)
+                for drv in [d for d in ad.drivers if d.data_path == path]:
+                    try:
+                        ad.drivers.remove(drv)
+                    except Exception:
+                        pass
         for key in list(pb.keys()):
-            if key == "IK_FK":
+            if "ik" in key.lower():
                 try:
                     pb[key] = 0.0
                 except Exception:
@@ -68,7 +134,7 @@ def build_pairs(source_arm, target_arm, target_preset="AUTO", manual_map=None):
 
 def iter_retarget(context, source_arm, target_arm, pairs, frame_start, frame_end,
                   step=1, yaw_offset_deg=0.0, loc_scale=1.0, root_sem="hips",
-                  scene_fps=None, fk_mode=True):
+                  scene_fps=None, fk_mode=True, smooth=0.6):
     """Bake the source motion onto the target, yielding (done, total) per frame.
 
     Local bone matrices are computed analytically instead of writing
@@ -108,6 +174,8 @@ def iter_retarget(context, source_arm, target_arm, pairs, frame_start, frame_end
         pb.rotation_mode = 'QUATERNION'
 
     prev_q = {}
+    rot_ema = {t: _QuatEMA(_alpha_for(sem, smooth)) for (_, t, sem) in pairs_sorted}
+    root_ema = _VecEMA(_alpha_for(root_sem, smooth)) if smooth > 0.0 else None
     for i in range(loop_count):
         frame = frame_start + i * step
         scene.frame_set(frame)
@@ -152,6 +220,9 @@ def iter_retarget(context, source_arm, target_arm, pairs, frame_start, frame_end
                 rot.negate()
             prev_q[t] = rot.copy()
 
+            rot = rot_ema[t].filter(rot)
+            if sem == root_sem and root_ema is not None:
+                loc = root_ema.filter(loc)
             pb.rotation_quaternion = rot
             pb.location = loc
             pose_arm[t] = desired_arm
@@ -177,10 +248,11 @@ def iter_retarget(context, source_arm, target_arm, pairs, frame_start, frame_end
 
 def retarget(context, source_arm, target_arm, pairs, frame_start, frame_end,
              step=1, yaw_offset_deg=0.0, loc_scale=1.0, root_sem="hips",
-             scene_fps=None, fk_mode=True):
+             scene_fps=None, fk_mode=True, smooth=0.6):
     gen = iter_retarget(context, source_arm, target_arm, pairs, frame_start, frame_end,
                         step=step, yaw_offset_deg=yaw_offset_deg, loc_scale=loc_scale,
-                        root_sem=root_sem, scene_fps=scene_fps, fk_mode=fk_mode)
+                        root_sem=root_sem, scene_fps=scene_fps, fk_mode=fk_mode,
+                        smooth=smooth)
     result = None
     while True:
         try:

@@ -12,9 +12,9 @@ visible silhouette. In other words: if only the upper body is on screen, the
 legs are placed in a stance underneath the visible mass instead of dangling from
 garbage coordinates.
 
-Only ``numpy`` is used. All geometry lives in solver space (``+X`` right,
-``+Y`` up, ``+Z`` toward the camera / "forward"), the same space used by
-:mod:`core.motion_solver`.
+Only ``numpy`` is used. All geometry lives in solver space (``+X`` = the person's
+LEFT, ``+Y`` = BACKWARD, ``+Z`` = UP, i.e. the character faces ``-Y``) — the same
+space used by :mod:`core.motion_solver` and by the add-on's ``mocap._to_blender``.
 """
 
 from __future__ import annotations
@@ -23,28 +23,29 @@ from typing import Dict, Iterable, Optional, Set, Tuple
 
 import numpy as np
 
-# A canonical ~1.7 m standing template, offsets in metres from mid-hip.
+# A canonical ~1.7 m standing template, offsets in metres from mid-hip, expressed
+# in solver space (+Z up, character faces -Y).  ``+Z`` is height, ``-Y`` is forward.
 STANDING: Dict[str, Tuple[float, float, float]] = {
     "mid_hip": (0.00, 0.00, 0.00),
     "l_hip": (0.09, 0.00, 0.00),
     "r_hip": (-0.09, 0.00, 0.00),
-    "l_knee": (0.10, -0.44, 0.02),
-    "r_knee": (-0.10, -0.44, 0.02),
-    "l_ankle": (0.10, -0.86, 0.03),
-    "r_ankle": (-0.10, -0.86, 0.03),
-    "l_foot": (0.10, -0.88, 0.16),
-    "r_foot": (-0.10, -0.88, 0.16),
-    "l_shoulder": (0.18, 0.48, 0.00),
-    "r_shoulder": (-0.18, 0.48, 0.00),
-    "l_elbow": (0.22, 0.20, 0.00),
-    "r_elbow": (-0.22, 0.20, 0.00),
-    "l_wrist": (0.24, -0.06, 0.00),
-    "r_wrist": (-0.24, -0.06, 0.00),
-    "l_index": (0.25, -0.12, 0.02),
-    "r_index": (-0.25, -0.12, 0.02),
-    "nose": (0.00, 0.62, 0.10),
-    "l_ear": (0.08, 0.60, 0.02),
-    "r_ear": (-0.08, 0.60, 0.02),
+    "l_knee": (0.10, -0.02, -0.44),
+    "r_knee": (-0.10, -0.02, -0.44),
+    "l_ankle": (0.10, -0.03, -0.86),
+    "r_ankle": (-0.10, -0.03, -0.86),
+    "l_foot": (0.10, -0.16, -0.88),
+    "r_foot": (-0.10, -0.16, -0.88),
+    "l_shoulder": (0.18, 0.00, 0.48),
+    "r_shoulder": (-0.18, 0.00, 0.48),
+    "l_elbow": (0.22, 0.00, 0.20),
+    "r_elbow": (-0.22, 0.00, 0.20),
+    "l_wrist": (0.24, 0.00, -0.06),
+    "r_wrist": (-0.24, 0.00, -0.06),
+    "l_index": (0.25, -0.02, -0.12),
+    "r_index": (-0.25, -0.02, -0.12),
+    "nose": (0.00, -0.10, 0.62),
+    "l_ear": (0.08, -0.02, 0.60),
+    "r_ear": (-0.08, -0.02, 0.60),
 }
 
 # Rough segment-mass weights (normalised at use time) for centre of gravity.
@@ -120,12 +121,12 @@ def _anchor_hip(pts: Dict[str, np.ndarray], valid: Dict[str, bool],
     vis_sh = [pts[s] for s in ("l_shoulder", "r_shoulder") if valid.get(s) and s in pts]
     if vis_sh:
         ms = np.mean(np.asarray(vis_sh, dtype=np.float64), axis=0)
-        return ms + np.array([0.0, -0.48 * scale, 0.0])
+        return ms + np.array([0.0, 0.0, -0.48 * scale])
     if valid.get("mid_shoulder") and "mid_shoulder" in pts:
-        return np.asarray(pts["mid_shoulder"], dtype=np.float64) + np.array([0.0, -0.48 * scale, 0.0])
+        return np.asarray(pts["mid_shoulder"], dtype=np.float64) + np.array([0.0, 0.0, -0.48 * scale])
     if valid.get("nose") and "nose" in pts:
-        return np.asarray(pts["nose"], dtype=np.float64) + np.array([0.0, -0.62 * scale, 0.0])
-    return np.array([0.0, -0.9 * scale, 0.0], dtype=np.float64)
+        return np.asarray(pts["nose"], dtype=np.float64) + np.array([0.0, 0.0, -0.62 * scale])
+    return np.array([0.0, 0.0, -0.9 * scale], dtype=np.float64)
 
 
 def _mirror_side(name: str, pts: Dict[str, np.ndarray], valid: Dict[str, bool],
@@ -167,7 +168,7 @@ def complete(
 
     Returns ``(points, synthesized_names)``. ``silhouette_xz`` optionally
     overrides the horizontal centre-of-gravity target with a silhouette
-    centroid (in solver-space ``x, z``).
+    centroid (solver-space horizontal ``x, y``).
     """
     out = {k: np.asarray(v, dtype=np.float64).copy() for k, v in pts.items()}
     vis = dict(valid)
@@ -208,10 +209,12 @@ def complete(
 
     _derive(out, vis)
 
-    # 3) balance: shift every synthesized joint horizontally so the synthesized
-    #    centre of gravity lands under the target (visible CoG / silhouette).
+    # 3) balance: shift every synthesized joint horizontally (in the XY ground
+    #    plane) so the synthesized centre of gravity lands under the target
+    #    (visible CoG / silhouette).
     if silhouette_xz is not None:
-        target = np.array([float(silhouette_xz[0]), 0.0, float(silhouette_xz[1])])
+        # ``silhouette_xz`` is a horizontal (x, y) centroid in solver space.
+        target = np.array([float(silhouette_xz[0]), float(silhouette_xz[1]), 0.0])
     else:
         target, _ = _cog(out, vis, only=set(out) - synth)
         if not np.any(target):
@@ -220,7 +223,7 @@ def complete(
     synth_cog, mass = _cog(out, vis, only=synth)
     if mass > 0.0:
         delta = target - synth_cog
-        delta[1] = 0.0
+        delta[2] = 0.0  # never move vertically; balance is a horizontal shift
         for name in synth:
             if name in out:
                 out[name] = out[name] + delta
@@ -241,7 +244,7 @@ def _derive(pts: Dict[str, np.ndarray], valid: Dict[str, bool]) -> None:
         up = np.asarray(pts["mid_shoulder"]) - np.asarray(pts["mid_hip"])
         n = np.linalg.norm(up)
         if n < 1e-6:
-            up = np.array([0.0, 1.0, 0.0])
+            up = np.array([0.0, 0.0, 1.0])
             n = 1.0
         if "nose" in pts:
             pts["nose_up"] = np.asarray(pts["nose"]) + up / n * 0.1
